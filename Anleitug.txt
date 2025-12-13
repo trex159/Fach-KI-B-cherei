@@ -1,0 +1,18 @@
+Um alle nötigen Imports zu installieren muss man:
+pip install pandas sentence-transformers python-Levenshtein
+ausführen. Wenn man eine CUDA-GPU hat ist es empfehlenswert eine entsprechende Version von torch zu installieren, für effizienteres Training.
+
+Die KI funktioniert indem sie zuerst versucht das Regal vorherzusagen, und dann die Fächer innerhalb jedes Regales. Die Top-5 Vorschläge werden dann ausgegeben.
+
+Um die KI auszuführen sollte man fach_KI.py starten. Um Sie auf die Fächer zu trainieren train_fach.py, und wenn man sie auf die Regale trainieren möchte train_regal.py.
+
+Folgende Dateien sind zusätzlich Notwendig:
+- 'fächer.txt'
+	in dieser Datei sind alle Regale inklusive Fächer gelistet (Buchstabe (maximal 2 Buchstaben) für jedes regal, eine Zahl
+	danach bestimmt das Fach. (Siehe zip-Datei mit Beispiel-KI))
+- 'INVENTUR_CLEAN.csv'
+	in dieser Datei ist der aktuelle Bestand der Bücherei aufgelistet, auf dem die KI trainiert werden soll.
+	Die Kathegorien sollten folgende sein:
+		title,author,beschreibung,fach,regal
+	weiter Kathegorien stören nicht.
+	
