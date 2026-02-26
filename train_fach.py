@@ -1,5 +1,7 @@
 # train_fach.py
 import os
+import sys
+import argparse
 import random
 import time
 import numpy as np
@@ -23,39 +25,30 @@ except ImportError:
 
 from utils import (
     load_inventory, load_faecher, get_sentence_embedder, embed_texts,
-    safe, extract_regal_group, group_indices_by_regal, fach_labels_for_regal
+    safe, extract_regal_group, group_indices_by_regal, fach_labels_for_regal, get_best_device,
+    set_process_cpu_limit, wait_for_cpu_below, adaptive_batch_size, get_cpu_usage
 )
 
 # -------------------------
 # Einstellungen
 # -------------------------
-# Device-Auswahl: bevorzugt CUDA, dann DirectML, sonst CPU
+# Device-Auswahl: echte GPU vor iGPU
 try:
-    DEVICE = None
-    if torch.cuda.is_available() and torch.cuda.device_count() > 0:
-        DEVICE = torch.device("cuda")
-        print(f"[INFO] Verwende CUDA-Gerät: {torch.cuda.get_device_name(0)}")
-    elif torch_directml is not None:
-        try:
-            DEVICE = torch_directml.device()
-            print("[INFO] Verwende DirectML-Gerät (z.B. AMD GPU)")
-        except Exception as e_dml:
-            print(f"[WARN] DirectML nicht initialisierbar: {e_dml}")
-    if DEVICE is None:
-        DEVICE = torch.device("cpu")
-        print("[INFO] Kein GPU-fähiges Gerät gefunden, verwende CPU.")
+    DEVICE = get_best_device()
 except Exception as e_dev:
     print(f"[WARN] Fehler beim Initialisieren des Devices: {e_dev}. Verwende CPU.")
     DEVICE = torch.device("cpu")
 
-EPOCH_SAMPLE_SIZE = 250
-BATCH_SIZE = 50
+# Basis-Konfiguration (wird adaptiv angepasst)
+BASE_EPOCH_SAMPLE_SIZE = 250
+BASE_BATCH_SIZE = 50
 MIN_SAMPLES_PER_REGAL = 30  # überspringe Regale mit zu wenigen Beispielen
 EMBEDDING_CACHE_DIR = "embedding_cache"
 os.makedirs(EMBEDDING_CACHE_DIR, exist_ok=True)
 
 # globaler Abort-Flag für Zieltraining
 GLOBAL_ABORT = False
+MAX_CPU_PERCENT = None  # wird zur Laufzeit gesetzt
 
 def mark(txt):
     return f"\033[93m{txt}\033[0m" #gelb markiert
@@ -185,23 +178,33 @@ def train_single_regal(regal, df, indices, embedder,
                 print("Globaler Abbruch-Flag gesetzt, beende Training dieses Regals.")
                 return
 
+            # CPU-Monitoring: wenn CPU zu hoch, warten
+            if MAX_CPU_PERCENT is not None:
+                current_cpu = get_cpu_usage()
+                if current_cpu > MAX_CPU_PERCENT:
+                    time.sleep(0.5)
+
             # prüfen, ob wir das Epochenlimit erreicht haben
             if epoch_limit is not None and epoch > epoch_limit:
                 print(f"Epochenlimit {epoch_limit} erreicht, Regal {regal} übersprungen.")
                 return
 
+            # Adaptive Batch-Größen
+            epoch_sample_size = adaptive_batch_size(BASE_EPOCH_SAMPLE_SIZE, MAX_CPU_PERCENT)
+            batch_size = adaptive_batch_size(BASE_BATCH_SIZE, MAX_CPU_PERCENT)
+
             # Sampling für diese Epoche (wir verwenden die Positionen in der Cache-Liste)
-            if len(indices) >= EPOCH_SAMPLE_SIZE:
-                sample_idxs = random.sample(range(len(embeddings)), EPOCH_SAMPLE_SIZE)
+            if len(indices) >= epoch_sample_size:
+                sample_idxs = random.sample(range(len(embeddings)), epoch_sample_size)
             else:
-                sample_idxs = random.choices(range(len(embeddings)), k=EPOCH_SAMPLE_SIZE)
+                sample_idxs = random.choices(range(len(embeddings)), k=epoch_sample_size)
 
             total_loss = 0.0
             batches = 0
 
             try:
-                for i in range(0, len(sample_idxs), BATCH_SIZE):
-                    batch_pos = sample_idxs[i:i + BATCH_SIZE]
+                for i in range(0, len(sample_idxs), batch_size):
+                    batch_pos = sample_idxs[i:i + batch_size]
 
                     # Eingaben aus Cache
                     X = torch.tensor(embeddings[batch_pos], dtype=torch.float32, device=DEVICE)
@@ -417,8 +420,14 @@ def choose_train_mode(alle_regale):
 # -------------------------
 # MAIN
 # -------------------------
-def main(csv_path="INVENTUR_CLEAN.csv"): #faecher_path="fächer.txt"
-    global GLOBAL_ABORT
+def main(csv_path="INVENTUR_CLEAN.csv", max_cpu_percent=None): #faecher_path="fächer.txt"
+    global GLOBAL_ABORT, MAX_CPU_PERCENT
+    MAX_CPU_PERCENT = max_cpu_percent
+    
+    # CPU-Limit setzen wenn aktiv
+    if max_cpu_percent is not None:
+        set_process_cpu_limit(max_cpu_percent)
+    
     print("Lade CSV und Fächer...")
     df, title_c, author_c, beschr_c, fach_c, regal_c = load_inventory(csv_path)
     #faecher = load_faecher(faecher_path)
@@ -511,4 +520,27 @@ def main(csv_path="INVENTUR_CLEAN.csv"): #faecher_path="fächer.txt"
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Trainiert die Fach-Klassifizierungsmodelle pro Regal",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Beispiele:
+  python train_fach.py                    # Normales Training (volle CPU-Auslastung)
+  python train_fach.py sparecpu 80        # Max 80%% CPU-Auslastung
+  python train_fach.py sparecpu 50        # Max 50%% CPU-Auslastung
+        """
+    )
+    
+    parser.add_argument("mode", nargs="?", default="normal", 
+                       help="Training Mode: 'normal' oder 'sparecpu'")
+    parser.add_argument("cpu_limit", nargs="?", type=int, default=None,
+                       help="CPU-Limit in Prozent (z.B. 80)")
+    
+    args = parser.parse_args()
+    
+    max_cpu = None
+    if args.mode.lower() == "sparecpu" and args.cpu_limit is not None:
+        max_cpu = args.cpu_limit
+        print(f"[INFO] CPU-Limitierung auf {max_cpu}% aktiviert.")
+    
+    main(max_cpu_percent=max_cpu)

@@ -1,18 +1,294 @@
-Um alle nötigen Imports zu installieren muss man:
-pip install pandas sentence-transformers python-Levenshtein
-ausführen. Wenn man eine CUDA-GPU hat ist es empfehlenswert eine entsprechende Version von torch zu installieren, für effizienteres Training.
+╔════════════════════════════════════════════════════════════════════════════╗
+║               POSITIONS-AI: BIBLIOTHEKS-KLASSIFIZIERUNG                     ║
+║                        DOKUMENTATION & ANLEITUNG                            ║
+╚════════════════════════════════════════════════════════════════════════════╝
 
-Die KI funktioniert indem sie zuerst versucht das Regal vorherzusagen, und dann die Fächer innerhalb jedes Regales. Die Top-5 Vorschläge werden dann ausgegeben.
 
-Um die KI auszuführen sollte man fach_KI.py starten. Um Sie auf die Fächer zu trainieren train_fach.py, und wenn man sie auf die Regale trainieren möchte train_regal.py.
+█ 1. INSTALLATION & ANFORDERUNGEN
+═══════════════════════════════════════════════════════════════════════════
 
-Folgende Dateien sind zusätzlich Notwendig:
-- 'fächer.txt'
-	in dieser Datei sind alle Regale inklusive Fächer gelistet (Buchstabe (maximal 2 Buchstaben) für jedes regal, eine Zahl
-	danach bestimmt das Fach. (Siehe zip-Datei mit Beispiel-KI))
-- 'INVENTUR_CLEAN.csv'
-	in dieser Datei ist der aktuelle Bestand der Bücherei aufgelistet, auf dem die KI trainiert werden soll.
-	Die Kathegorien sollten folgende sein:
-		title,author,beschreibung,fach,regal
-	weiter Kathegorien stören nicht.
-	
+1.1 Python Dependencies installieren:
+    ─────────────────────────────────────
+    pip install pandas sentence-transformers python-Levenshtein
+    
+    Zusätzlich wird psutil für CPU-Limitierung benötigt:
+    pip install psutil
+
+1.2 GPU-Unterstützung (optional, aber empfohlen):
+    ─────────────────────────────────────────────
+    
+    ✓ NVIDIA CUDA GPU:
+      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+    
+    ✓ AMD GPU / DirectML (Windows):
+      pip install torch-directml
+      Die KI erkennt automatisch verfügbare GPUs!
+    
+    ✓ Apple Silicon (M1/M2/M3):
+      torch wird mit MPS-Support installiert (funktioniert automatisch)
+
+1.3 System-Anforderungen:
+    ─────────────────────
+    - RAM: Mindestens 4GB (8GB+ empfohlen)
+    - GPU: Optional, Training funktioniert auch auf CPU
+    - Speicher: ~2GB für Model-Files und Cache
+
+
+█ 2. FUNKTIONSWEISE
+═════════════════════════════════════════════════════════════════════════════
+
+Die KI arbeitet in zwei Stufen:
+    
+    1. REGAL-KLASSIFIZIERUNG (brain_regal.pt)
+       └─ Vorhersage: Welches Regal gehört das Buch?
+    
+    2. FACH-KLASSIFIZIERUNG pro Regal (brain_fach_[REGAL].pt)
+       └─ Vorhersage: Welcher Fachbereich im Regal?
+    
+    ➜ Finale Ausgabe: Top-3 bis Top-5 Vorschläge mit Konfidenzwerten
+
+
+█ 3. ERFORDERLICHE DATEIEN
+═════════════════════════════════════════════════════════════════════════════
+
+3.1 'fächer.txt' - Regal- und Fach-Struktur
+    ──────────────────────────────────────────
+    Format: [REGAL][FACH_NUMMER]
+    
+    Beispiel:
+        A1
+        A2
+        B1
+        B2
+        BW1
+        BW2
+        C1
+        ...
+    
+    ➜ [REGAL]: Maximal 2 Buchstaben (A, B, BW, C, GK, etc.)
+    ➜ [FACH_NUMMER]: Beliebige Zahl (1, 2, 3, ...)
+
+3.2 'INVENTUR_CLEAN.csv' - Buchbestand der Bücherei
+    ─────────────────────────────────────────────────
+    CSV-Format mit folgenden Spalten:
+    
+    Erforderlich:
+        - title            (Buchtitel)
+        - author           (Autor)
+        - beschreibung     (Kurzbeschreibung)
+        - fach             (Fachbereich)
+        - regal            (Regal-Code)
+    
+    Beispiel-Zeile:
+        "Erebos","Ursula Poznanski","Science-Fiction Roman","Jugendliteratur","A1"
+    
+    ➜ Weitere Spalten stören nicht und werden ignoriert
+    ➜ Spalten-Namen sind case-insensitive
+
+
+█ 4. TRAININGSMODI
+══════════════════════════════════════════════════════════════════════════════
+
+4.1 Regal-KI trainieren (train_regal.py)
+    ───────────────────────────────────
+    
+    Normal (volle CPU-Auslastung):
+        python train_regal.py
+    
+    Mit CPU-Limitierung (z.B. 80% max Auslastung):
+        python train_regal.py sparecpu 80
+    
+    Mit CPU-Limitierung (z.B. 50% für parallele Nutzung):
+        python train_regal.py sparecpu 50
+    
+    ➜ Das System pausiert automatisch wenn CPU-Limit überschritten wird
+    ➜ Batch-Größen werden adaptiv an CPU/RAM angepasst
+    ➜ Speichert automatisch beste Modelle (brain_regal.pt)
+
+4.2 Fach-KI trainieren (train_fach.py)
+    ──────────────────────────────────
+    
+    Normal (volle CPU-Auslastung):
+        python train_fach.py
+    
+    Mit CPU-Limitierung:
+        python train_fach.py sparecpu 80
+    
+    Trainingsmodi (nach Start interaktiv wählbar):
+        1 = Alle Regale trainieren
+        2 = Ein bestimmtes Regal trainieren
+        3 = Zieltraining (bis Loss-Wert erreicht)
+        4 = Abbrechen
+        5 = Zyklisches Training (100 Epochen/Regal, Endlosschleife)
+    
+    ➜ Speichert pro Regal ein Modell: brain_fach_[REGAL].pt
+    ➜ Mit F5 kann Regal übersprungen werden (Windows)
+
+
+█ 5. VORHERSAGE & INFERENZ
+═════════════════════════════════════════════════════════════════════════════
+
+5.1 CLI-Modus (fach_KI.py)
+    ────────────────────────
+    
+    python fach_KI.py
+    
+    Interaktive Eingabe:
+        Titel: Erebos
+        Autor: Ursula Poznanski
+        Kurzbeschreibung: Science-Fiction Roman über ein gefährliches Spiel
+    
+    Output:
+        Regal: A | Fach: 1 | P(regal)=0.95 | P(fach|regal)=0.88 | Komb=0.84
+        Regal: B | Fach: 2 | P(regal)=0.04 | P(fach|regal)=0.72 | Komb=0.03
+        Regal: C | Fach: - | P(regal)=0.01 | P(fach|regal)=1.00 | Komb=0.01
+    
+    ➜ Top-10 Vorschläge werden nach kombinierter Wahrscheinlichkeit sortiert
+
+5.2 GUI-Modus (fach_KI_gui.py)
+    ════════════════════════════
+    
+    python fach_KI_gui.py
+    
+    ➜ Web-basierte Schnittstelle (NiceGUI)
+    ➜ Öffnet automatisch im Browser
+    ➜ Einfacheres Testen für End-User
+
+
+█ 6. HARDWARE & OPTIMIERUNGEN
+═════════════════════════════════════════════════════════════════════════════
+
+6.1 GPU-Auswahl (automatisch)
+    ──────────────────────────
+    Das System wählt automatisch:
+    
+    ✓ Erste Priorität: NVIDIA CUDA mit meistem VRAM (echte GPU > iGPU)
+    ✓ Zweite Priorität: AMD GPU via DirectML
+    ✓ Fallback: CPU (funktioniert, aber langsamer)
+    
+    Info beim Start:
+        [INFO] CUDA Gerät 0: NVIDIA GeForce RTX 4060 | 8.0GB VRAM
+        [INFO] Verwende CUDA Gerät 0: NVIDIA GeForce RTX 4060 (8.0GB)
+
+6.2 CPU-Limitierung (sparecpu)
+    ────────────────────────────
+    
+    Warum nutzen?
+    ├─ Interaktive Nutzung des Computers während Training
+    ├─ Temperatur-Management
+    ├─ Paralleltraining auf mehreren Kernen
+    └─ Energiesparen
+    
+    Effekt:
+    ├─ Process läuft mit niedriger Priorität
+    ├─ Batch-Größen werden adaptiv reduziert
+    ├─ Training pausiert automatisch bei Limit-Überschreitung
+    └─ Keine Performance-Einbußen bei Einhaltung des Limits
+
+6.3 Embedding-Cache
+    ─────────────────
+    
+    Optimierung:
+    ├─ Embeddings werden berechnet & in embedding_cache/ gespeichert
+    ├─ Schnellere Epochen bei wiederholtem Training
+    ├─ Reduziert Sentence-Transformer Berechnung
+    └─ Spart CPU/GPU für reine neuronale Netzwerk-Operationen
+
+
+█ 7. AUSGABEVERZEICHNISSE
+═════════════════════════════════════════════════════════════════════════════
+
+Nach dem Training entstehen folgende Dateien:
+
+    brain_regal.pt              ← Regal-Klassifizierungsmodell
+    brain_fach_A.pt             ← Fach-Modelle pro Regal
+    brain_fach_B.pt
+    brain_fach_BW.pt
+    ... etc.
+    
+    embedding_cache/            ← Zwischengespeicherte Embeddings
+    ├─ embeddings_all.npy       (für brain_regal.pt)
+    ├─ embeddings_A.npy
+    ├─ embeddings_B.npy
+    └─ ... etc.
+    
+    backups/                    ← Automatische Sicherungen
+    ├─ backup_NNNN.csv
+
+
+█ 8. BEISPIEL-WORKFLOW
+═════════════════════════════════════════════════════════════════════════════
+
+1. Setup:
+   $ pip install pandas sentence-transformers python-Levenshtein psutil
+   $ pip install torch-directml  # Wenn AMD GPU vorhanden
+
+2. Daten vorbereiten:
+   └─ fächer.txt mit Struktur erstellen
+   └─ INVENTUR_CLEAN.csv einfügen
+
+3. Regal-KI trainieren:
+   $ python train_regal.py sparecpu 80
+   └─ Schafft brain_regal.pt
+
+4. Fach-KI trainieren:
+   $ python train_fach.py sparecpu 80
+   └─ Wählt Trainingsmodus (z.B. "1" für alle)
+   └─ Schafft brain_fach_*.pt pro Regal
+
+5. Vorhersagen machen:
+   $ python fach_KI.py          # CLI
+   # oder
+   $ python fach_KI_gui.py      # Web-UI
+
+
+█ 9. ERWEITERTE OPTIONEN
+════════════════════════════════════════════════════════════════════════════
+
+9.1 Checkpoint-Kontinuation:
+    Beim Starten prüfen Scripts automatisch nach bestehenden .pt Dateien
+    ├─ Weitertraining von letztem Checkpoint möglich
+    ├─ Optimizer-State wird wiederhergestellt
+    └─ Beste Loss-Werte werden beibehalten
+
+9.2 Fehlerbehandlung:
+    ├─ Beschädigte .pt Dateien: Automatischer Neustart
+    ├─ Fehlende GPU: Fallback auf CPU
+    ├─ RAM-Mangel: Batch-Größen reduzieren sich automatisch
+    └─ CSV Parsing: Flexible Format-Erkennung
+
+
+█ 10. TIPPS & HÄUFIGE PROBLEME
+═══════════════════════════════════════════════════════════════════════════
+
+Problem: Training sehr langsam
+Lösung:
+  ├─ GPU verfügbar? → NVIDIA/AMD Driver aktualisieren
+  ├─ CPU-Limitierung aktiv? → Erhöhen (z.B. 80 statt 50)
+  └─ RAM voll? → Andere Programme schließen
+
+Problem: ModuleNotFoundError für Imports
+Lösung:
+  └─ pip install pandas sentence-transformers python-Levenshtein psutil
+
+Problem: Vorhersagen haben niedrige Konfidenz
+Lösung:
+  ├─ Mehr Trainingsdaten in INVENTUR_CLEAN.csv nötig
+  ├─ Länger trainieren (mehr Epochen)
+  └─ Konsistentz in fächer.txt überprüfen
+
+Problem: CPU-Limitierung funktioniert nicht
+Lösung:
+  ├─ psutil installiert? → pip install psutil
+  ├─ Windows Admin-Privilegien? → Kann nötig sein
+  └─ CPU-Last weiter hoch? → Limit erhöhen oder weniger Prozesse
+
+
+█ FRAGEN & SUPPORT
+═════════════════════════════════════════════════════════════════════════════
+
+Diese KI arbeitet lokal und speichert keine Daten online.
+Alle Modelle und Daten bleiben auf Ihrem Computer.
+
+Version: 2.1 (26 Feb 2026)
+Features: GPU-Auswahl, CPU-Limitierung, Embedding-Cache, DirectML Support	

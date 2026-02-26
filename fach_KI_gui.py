@@ -1,7 +1,10 @@
-# fach_KI.py
+# fach_KI_gui.py
 import os
 import torch
 import numpy as np
+
+from nicegui import ui
+
 from utils import get_sentence_embedder, safe, get_best_device
 
 DEVICE = get_best_device()
@@ -72,31 +75,26 @@ def predict_fach_within_regal(regal, title, author, beschreibung, topk=3):
     path = f"brain_fach_{regal}.pt"
 
     if not os.path.exists(path):
-        print(f"[INFO] Regal {regal} hat kein Fach Modell, übersprungen.")
-        return None
+        return None, f"[INFO] Regal {regal} hat kein Fach Modell, übersprungen."
 
     try:
         ck = torch.load(path, map_location="cpu")
     except Exception as e:
-        print(f"[WARNUNG] Fach Modell für Regal {regal} beschädigt ({path}): {e}")
-        return None
+        return None, f"[WARNUNG] Fach Modell für Regal {regal} beschädigt: {e}"
 
     labels = ck.get("labels")
     if not labels or len(labels) == 0:
-        print(f"[INFO] Regal {regal} enthält keine Fach Labels, übersprungen.")
-        return None
+        return None, f"[INFO] Regal {regal} enthält keine Fach Labels."
 
     if len(labels) < 2 or all(str(l).upper() == "NAN" for l in labels):
-        print(f"[INFO] Regal {regal} hat keine echten Fächer, ignoriert.")
-        return None
+        return None, f"[INFO] Regal {regal} hat keine echten Fächer."
 
     model = build_model(ck["input_dim"], ck["num_classes"])
 
     try:
         model.load_state_dict(ck["model_state_dict"])
     except Exception as e:
-        print(f"[WARNUNG] Fach Modell für Regal {regal} inkompatibel: {e}")
-        return None
+        return None, f"[WARNUNG] Fach Modell für Regal {regal} inkompatibel: {e}"
 
     model.to(DEVICE)
     model.eval()
@@ -113,7 +111,7 @@ def predict_fach_within_regal(regal, title, author, beschreibung, topk=3):
         probs = torch.softmax(out, dim=-1).cpu().numpy().ravel()
 
     idxs = np.argsort(-probs)[:topk]
-    return [(labels[i], float(probs[i])) for i in idxs]
+    return [(labels[i], float(probs[i])) for i in idxs], None
 
 
 # -----------------------------------------------------------
@@ -122,44 +120,75 @@ def predict_fach_within_regal(regal, title, author, beschreibung, topk=3):
 def predict_two_stage(title, author, beschreibung, topk_regal=3, topk_fach=3):
     regals = predict_regal(title, author, beschreibung, topk=topk_regal)
     results = []
+    logs = []
 
     for regal, p_reg in regals:
-        print(f"[DEBUG] Versuche Fachmodell für Regal {regal} zu laden...")
+        logs.append(f"[DEBUG] Versuche Fachmodell für Regal {regal} zu laden...")
 
-        try:
-            top_fach = predict_fach_within_regal(regal, title, author, beschreibung, topk=topk_fach)
+        top_fach, msg = predict_fach_within_regal(
+            regal, title, author, beschreibung, topk=topk_fach
+        )
 
-            if top_fach:
-                for fach_label, p_fach in top_fach:
-                    combined = p_reg * p_fach
-                    results.append((regal, fach_label, p_reg, p_fach, combined))
-                continue
+        if msg:
+            logs.append(msg)
 
-        except Exception as e:
-            print(f"[WARNUNG] Fehler beim Laden des Fachmodells für Regal {regal}: {e}")
-
-        print(f"[INFO] Regal {regal} wird ohne Fach Priorisierung berücksichtigt.")
-        results.append((regal, None, p_reg, 1.0, p_reg))
+        if top_fach:
+            for fach_label, p_fach in top_fach:
+                combined = p_reg * p_fach
+                results.append((regal, fach_label, p_reg, p_fach, combined))
+        else:
+            results.append((regal, None, p_reg, 1.0, p_reg))
 
     results.sort(key=lambda x: -x[4])
-    return results
+    return results, logs
 
 
 # -----------------------------------------------------------
-# CLI
+# GUI (NiceGUI)
 # -----------------------------------------------------------
-if __name__ == "__main__":
-    title = input("Titel: ")
-    author = input("Autor: ")
-    beschr = input("Kurzbeschreibung: ")
+ui.label("📚 Fach- & Regal-Klassifikation").classes("text-2xl font-bold")
 
-    res = predict_two_stage(title, author, beschr, topk_regal=3, topk_fach=3)
+title_in = ui.input("Titel").classes("w-full")
+author_in = ui.input("Autor").classes("w-full")
+beschr_in = ui.textarea("Kurzbeschreibung").classes("w-full")
 
-    if not res:
-        print("Keine Vorhersage möglich.")
-    else:
-        print("\nTop Vorhersagen (Regal, Fach, P(regal), P(fach|regal), kombiniert):")
-        for regal, fach, p_reg, p_fach, comb in res[:10]:
-            fach_disp = fach if fach is not None else "-"
-            print(f"Regal: {regal} | Fach: {fach_disp} | "
-                  f"P(regal)={p_reg:.3f} | P(fach|regal)={p_fach:.3f} | Komb={comb:.4f}")
+log_box = ui.textarea("Log").props("readonly").classes("w-full h-40")
+result_table = ui.table(
+    columns=[
+        {"name": "regal", "label": "Regal", "field": "regal"},
+        {"name": "fach", "label": "Fach", "field": "fach"},
+        {"name": "p_reg", "label": "P(Regal)", "field": "p_reg"},
+        {"name": "p_fach", "label": "P(Fach|Regal)", "field": "p_fach"},
+        {"name": "komb", "label": "Kombiniert", "field": "komb"},
+    ],
+    rows=[]
+).classes("w-full")
+
+
+def run_prediction():
+    result_table.rows.clear()
+    log_box.value = ""
+
+    res, logs = predict_two_stage(
+        title_in.value,
+        author_in.value,
+        beschr_in.value,
+        topk_regal=3,
+        topk_fach=3,
+    )
+
+    log_box.value = "\n".join(logs)
+
+    for regal, fach, p_reg, p_fach, comb in res[:10]:
+        result_table.rows.append({
+            "regal": regal,
+            "fach": fach if fach is not None else "-",
+            "p_reg": f"{p_reg:.3f}",
+            "p_fach": f"{p_fach:.3f}",
+            "komb": f"{comb:.4f}",
+        })
+
+
+ui.button("🔍 Vorhersage starten", on_click=run_prediction).classes("mt-4")
+
+ui.run()
