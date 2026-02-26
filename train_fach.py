@@ -15,6 +15,12 @@ except ImportError:
     torch_directml = None
     print("[INFO] torch_directml nicht installiert, DirectML-Unterstützung deaktiviert.")
 
+# Für F5‑Abbruch/Sprung in der Konsole (MSVC‑Runtime auf Windows)
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None  # auf Nicht-Windows-Systemen nicht verfügbar
+
 from utils import (
     load_inventory, load_faecher, get_sentence_embedder, embed_texts,
     safe, extract_regal_group, group_indices_by_regal, fach_labels_for_regal
@@ -122,7 +128,7 @@ def try_load_checkpoint(path, model, optimizer=None):
 # -------------------------
 def train_single_regal(regal, df, indices, embedder,
                        title_c, author_c, beschr_c, fach_c, regal_c,
-                       target_loss=None):
+                       target_loss=None, epoch_limit=None):
     """
     Trainiert ein einzelnes Regal.
     - Erzeugt bei Bedarf einen Embedding-Cache und nutzt ihn.
@@ -166,8 +172,22 @@ def train_single_regal(regal, df, indices, embedder,
         while True:
             epoch += 1
 
+            # prüfen, ob F5 gedrückt wurde (nur Windows/MSVCRT)
+            if msvcrt and msvcrt.kbhit():
+                k = msvcrt.getch()
+                if k in (b"\x00", b"\xe0"):  # Funktions- oder Pfeiltaste
+                    k2 = msvcrt.getch()
+                    if k2 == b"?":  # F5 wird als '?' (0x3F) zurückgegeben
+                        print("\n[F5] Regal übersprungen.")
+                        return
+
             if GLOBAL_ABORT:
                 print("Globaler Abbruch-Flag gesetzt, beende Training dieses Regals.")
+                return
+
+            # prüfen, ob wir das Epochenlimit erreicht haben
+            if epoch_limit is not None and epoch > epoch_limit:
+                print(f"Epochenlimit {epoch_limit} erreicht, Regal {regal} übersprungen.")
                 return
 
             # Sampling für diese Epoche (wir verwenden die Positionen in der Cache-Liste)
@@ -345,9 +365,10 @@ def choose_train_mode(alle_regale):
     print("2 = Nur EIN bestimmtes Regal trainieren")
     print("3 = Zieltraining")
     print("4 = Abbrechen")
+    print("5 = Zyklisches Training (100 Epochen pro Regal, dann nächstes, Endlosschleife)")
 
     while True:
-        mode = input("Auswahl (1/2/3/4): ").strip()
+        mode = input("Auswahl (1/2/3/4/5): ").strip()
         if mode == "1":
             return "all", None, None
         elif mode == "2":
@@ -359,6 +380,7 @@ def choose_train_mode(alle_regale):
             else:
                 print("Ungültiges Regal. Bitte erneut versuchen.")
         elif mode == "3":
+            # Zieltraining mit optionalem Epochenlimit
             while True:
                 t = input("Zielloss eingeben (z.B. 0.33): ").strip()
                 try:
@@ -366,14 +388,30 @@ def choose_train_mode(alle_regale):
                     if target <= 0:
                         print("Zielloss muss größer als 0 sein.")
                         continue
-                    return "target", None, target
+                    break
                 except:
                     print("Ungültige Eingabe, gebe eine Dezimalzahl ein.")
+            # epochenlimit abfragen (Enter = Standard 3000)
+            e_lim = None
+            lim_input = input("Epochenlimit (Enter=3000, 0=kein Limit): ").strip()
+            if lim_input == "":
+                e_lim = 3000
+            else:
+                try:
+                    val = int(lim_input)
+                    if val > 0:
+                        e_lim = val
+                except:
+                    pass
+            return "target", None, (target, e_lim)
         elif mode == "4":
             print("Training abgebrochen.")
             return "abort", None, None
+        elif mode == "5":
+            print("Zyklisches Training aktiviert (100 Epochen/Regal). ^C zum Abbrechen.")
+            return "cycle", None, None
         else:
-            print("Bitte 1, 2, 3 oder 4 eingeben.")
+            print("Bitte 1, 2, 3, 4 oder 5 eingeben.")
 
 
 # -------------------------
@@ -423,6 +461,8 @@ def main(csv_path="INVENTUR_CLEAN.csv"): #faecher_path="fächer.txt"
         return
 
     if mode == "target":
+        # target is tuple (loss, epoch_limit)
+        loss_val, epoch_limit = target
         GLOBAL_ABORT = False
         try:
             for r in regals:
@@ -432,7 +472,8 @@ def main(csv_path="INVENTUR_CLEAN.csv"): #faecher_path="fächer.txt"
                 if len(idxs) < MIN_SAMPLES_PER_REGAL:
                     print(f"Regal {r}: zu wenige Beispiele ({len(idxs)}), übersprungen.")
                     continue
-                train_single_regal(r, df, idxs, embedder, title_c, author_c, beschr_c, fach_c, regal_c, target_loss=target)
+                train_single_regal(r, df, idxs, embedder, title_c, author_c, beschr_c, fach_c, regal_c,
+                                   target_loss=loss_val, epoch_limit=epoch_limit)
             if GLOBAL_ABORT:
                 print("Zieltraining abgebrochen durch Benutzer.")
             else:
@@ -446,6 +487,26 @@ def main(csv_path="INVENTUR_CLEAN.csv"): #faecher_path="fächer.txt"
                 torch.cuda.empty_cache()
             except Exception as e_cache:
                 print(f"[WARN] torch.cuda.empty_cache() schlug fehl: {e_cache}")
+        return
+
+    if mode == "cycle":
+        GLOBAL_ABORT = False
+        try:
+            while not GLOBAL_ABORT:
+                for r in regals:
+                    if GLOBAL_ABORT:
+                        break
+                    idxs = grouped.get(r, [])
+                    if len(idxs) < MIN_SAMPLES_PER_REGAL:
+                        print(f"Regal {r}: zu wenige Beispiele ({len(idxs)}), übersprungen.")
+                        continue
+                    train_single_regal(r, df, idxs, embedder, title_c, author_c, beschr_c, fach_c, regal_c,
+                                       epoch_limit=100)
+            if GLOBAL_ABORT:
+                print("Zyklisches Training durch Benutzer beendet.")
+        except KeyboardInterrupt:
+            GLOBAL_ABORT = True
+            print("\nZyklisches Training komplett durch Benutzer abgebrochen.")
         return
 
 
