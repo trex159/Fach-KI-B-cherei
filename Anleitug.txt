@@ -145,16 +145,6 @@ Die KI arbeitet in zwei Stufen:
     
     ➜ Top-10 Vorschläge werden nach kombinierter Wahrscheinlichkeit sortiert
 
-5.2 GUI-Modus (fach_KI_gui.py)
-    ════════════════════════════
-    
-    python fach_KI_gui.py
-    
-    ➜ Web-basierte Schnittstelle (NiceGUI)
-    ➜ Öffnet automatisch im Browser
-    ➜ Einfacheres Testen für End-User
-
-
 █ 6. HARDWARE & OPTIMIERUNGEN
 ═════════════════════════════════════════════════════════════════════════════
 
@@ -291,4 +281,5 @@ Diese KI arbeitet lokal und speichert keine Daten online.
 Alle Modelle und Daten bleiben auf Ihrem Computer.
 
 Version: 2.1 (26 Feb 2026)
+
 Features: GPU-Auswahl, CPU-Limitierung, Embedding-Cache, DirectML Support	
