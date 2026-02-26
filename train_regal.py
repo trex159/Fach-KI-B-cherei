@@ -2,35 +2,44 @@
 import os
 import random
 import time
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+
+# optional DirectML support (AMD)
+try:
+    import torch_directml
+except ImportError:
+    torch_directml = None
+
 from utils import (
     load_inventory, load_faecher, get_sentence_embedder, embed_texts,
     safe, extract_regal_group, regal_groups_from_faecher, group_indices_by_regal
 )
 
-# Robust device detection: try CUDA, fall back to CPU on any error
+# Device-Auswahl: bevorzugt CUDA, dann DirectML, sonst CPU
 try:
-    # manche CUDA-Fehler treten bereits bei is_available() auf -> weiche mit try/except ab
-    use_cuda = False
-    try:
-        use_cuda = torch.cuda.is_available() and torch.cuda.device_count() > 0
-    except Exception as e_check:
-        print(f"[WARN] CUDA-Abfrage schlug fehl: {e_check} -> Fallback auf CPU")
-
-    if use_cuda:
+    DEVICE = None
+    if torch.cuda.is_available() and torch.cuda.device_count() > 0:
         DEVICE = torch.device("cuda")
         print(f"[INFO] Verwende CUDA-Gerät: {torch.cuda.get_device_name(0)}")
-    else:
+    elif torch_directml is not None:
+        try:
+            DEVICE = torch_directml.device()
+            print("[INFO] Verwende DirectML-Gerät (z.B. AMD GPU)")
+        except Exception as e_dml:
+            print(f"[WARN] DirectML nicht initialisierbar: {e_dml}")
+    if DEVICE is None:
         DEVICE = torch.device("cpu")
-        print("[INFO] CUDA nicht verfügbar, benutze CPU.")
+        print("[INFO] Kein GPU-fähiges Gerät gefunden, verwende CPU.")
 except Exception as e_dev:
-    print(f"[WARN] Fehler beim Initialisieren des CUDA-Devices: {e_dev}. Verwende CPU.")
+    print(f"[WARN] Fehler beim Initialisieren des Devices: {e_dev}. Verwende CPU.")
     DEVICE = torch.device("cpu")
 
 EPOCH_SAMPLE_SIZE = 2500
 BATCH_SIZE = 500
+EMBEDDING_CACHE_FILE = "embeddings_all.npy"
 
 # Prioritätstabellen
 PRIO_RANG1 = {"B", "C", "D", "E"}
@@ -42,6 +51,33 @@ def regal_weight(regal):
     if regal in PRIO_RANG2:
         return 2
     return 1
+
+
+# -------------------------
+# Embedding cache helper
+# -------------------------
+def create_global_embedding_cache(df, title_c, author_c, beschr_c, regal_c, cache_file):
+    """Erzeuge Cache für alle Beispiele im DataFrame in df.index-Reihenfolge."""
+    print(f"[CACHE] Erstelle globalen Embedding-Cache: {cache_file}")
+    texts = []
+    for idx in df.index:
+        row = df.loc[idx]
+        title = safe(row.get(title_c))
+        author = safe(row.get(author_c))
+        beschr = safe(row.get(beschr_c))
+        regal_val = safe(row.get(regal_c))
+        if regal_val:
+            grp = extract_regal_group(regal_val)
+        else:
+            grp = extract_regal_group(safe(row.get("fach")))
+        txt = f"{title}, {author}, {beschr}"
+        texts.append(txt)
+
+    start_time = time.time()
+    embeddings = embed_texts(get_sentence_embedder(), texts)
+    print(f"[CACHE] Embedding-Zeit: {time.time() - start_time:.2f}s")
+    np.save(cache_file, embeddings.astype(np.float32))
+    print(f"[CACHE] Gespeichert unter {cache_file}")
 
 
 def build_model(input_dim, num_classes):
@@ -57,7 +93,11 @@ def build_model(input_dim, num_classes):
 def try_load_checkpoint(path, model, optimizer=None):
     if not os.path.exists(path):
         return None
-    ck = torch.load(path, map_location=DEVICE)
+    try:
+        ck = torch.load(path, map_location="cpu")
+    except Exception as e:
+        print(f"Fehler beim Laden von {path}: {e}")
+        return None
     ck_model = ck.get("model_state_dict") or ck.get("model")
     if ck_model is None:
         return None
@@ -65,7 +105,7 @@ def try_load_checkpoint(path, model, optimizer=None):
         model.load_state_dict(ck_model)
         if optimizer is not None and "optimizer_state_dict" in ck:
             optimizer.load_state_dict(ck["optimizer_state_dict"])
-        print(f"Geladener Checkpoint {path} (weitertrainierbar).")
+        print(f"Geladener Checkpoint {path} (CPU-kompatibel).")
         return ck
     except Exception as e:
         print(f"Checkpoint {path} gefunden, aber inkompatibel: {e}. Starte neu.")
@@ -89,10 +129,16 @@ def main(csv_path="INVENTUR_CLEAN.csv", faecher_path="fächer.txt", save_path="b
     # Gewichte vorbereiten
     group_weights = {r: regal_weight(r) for r in regals}
 
-    # Embeddings
+    # Embeddings und Cache
     embedder = get_sentence_embedder()
-    sample = embedder.encode(["test"])
-    input_dim = sample.shape[1]
+    # erstelle globalen Cache, falls noch nicht vorhanden
+    if not os.path.exists(EMBEDDING_CACHE_FILE):
+        create_global_embedding_cache(df, title_c, author_c, beschr_c, regal_c, EMBEDDING_CACHE_FILE)
+    embeddings = np.load(EMBEDDING_CACHE_FILE)
+    # map DataFrame-Index zu Position im Cache (selten verändert, deshalb dict)
+    index_to_pos = {idx: pos for pos, idx in enumerate(df.index)}
+
+    input_dim = embeddings.shape[1]
     num_classes = len(regals)
 
     model = build_model(input_dim, num_classes).to(DEVICE)
@@ -134,28 +180,19 @@ def main(csv_path="INVENTUR_CLEAN.csv", faecher_path="fächer.txt", save_path="b
 
             for i in range(0, len(indices), BATCH_SIZE):
                 batch_idxs = indices[i:i+BATCH_SIZE]
-                texts, targets = [], []
+                # embeddings aus Cache holen
+                positions = [index_to_pos[idx] for idx in batch_idxs]
+                X = torch.tensor(embeddings[positions], dtype=torch.float32, device=DEVICE)
 
+                targets = []
                 for idx in batch_idxs:
-                    row = df.loc[idx]
-                    title = safe(row.get(title_c))
-                    author = safe(row.get(author_c))
-                    beschr = safe(row.get(beschr_c))
-
-                    txt = f"{title}, {author}, {beschr}"
-                    texts.append(txt)
-
-                    regal_val = safe(row.get(regal_c))
+                    regal_val = safe(df.loc[idx].get(regal_c))
                     if regal_val:
                         grp = extract_regal_group(regal_val)
                     else:
-                        grp = extract_regal_group(safe(row.get(fach_c)))
+                        grp = extract_regal_group(safe(df.loc[idx].get(fach_c)))
+                    targets.append(regals.index(grp))
 
-                    grp_idx = regals.index(grp)
-                    targets.append(grp_idx)
-
-                X = embed_texts(embedder, texts)
-                X = torch.tensor(X, dtype=torch.float32, device=DEVICE)
                 y = torch.tensor(targets, dtype=torch.long, device=DEVICE)
 
                 model.train()

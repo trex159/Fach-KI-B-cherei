@@ -2,9 +2,18 @@
 import os
 import random
 import time
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+
+# optional DirectML support (AMD)
+try:
+    import torch_directml
+    print("[INFO] torch_directml importiert, DirectML-Unterstützung aktiviert.")
+except ImportError:
+    torch_directml = None
+    print("[INFO] torch_directml nicht installiert, DirectML-Unterstützung deaktiviert.")
 
 from utils import (
     load_inventory, load_faecher, get_sentence_embedder, embed_texts,
@@ -14,33 +23,59 @@ from utils import (
 # -------------------------
 # Einstellungen
 # -------------------------
-# Robust device detection: try CUDA, fall back to CPU on any error
+# Device-Auswahl: bevorzugt CUDA, dann DirectML, sonst CPU
 try:
-    # manche CUDA-Fehler treten bereits bei is_available() auf -> weiche mit try/except ab
-    use_cuda = False
-    try:
-        use_cuda = torch.cuda.is_available() and torch.cuda.device_count() > 0
-    except Exception as e_check:
-        print(f"[WARN] CUDA-Abfrage schlug fehl: {e_check} -> Fallback auf CPU")
-
-    if use_cuda:
+    DEVICE = None
+    if torch.cuda.is_available() and torch.cuda.device_count() > 0:
         DEVICE = torch.device("cuda")
         print(f"[INFO] Verwende CUDA-Gerät: {torch.cuda.get_device_name(0)}")
-    else:
+    elif torch_directml is not None:
+        try:
+            DEVICE = torch_directml.device()
+            print("[INFO] Verwende DirectML-Gerät (z.B. AMD GPU)")
+        except Exception as e_dml:
+            print(f"[WARN] DirectML nicht initialisierbar: {e_dml}")
+    if DEVICE is None:
         DEVICE = torch.device("cpu")
-        print("[INFO] CUDA nicht verfügbar, benutze CPU.")
+        print("[INFO] Kein GPU-fähiges Gerät gefunden, verwende CPU.")
 except Exception as e_dev:
-    print(f"[WARN] Fehler beim Initialisieren des CUDA-Devices: {e_dev}. Verwende CPU.")
+    print(f"[WARN] Fehler beim Initialisieren des Devices: {e_dev}. Verwende CPU.")
     DEVICE = torch.device("cpu")
+
 EPOCH_SAMPLE_SIZE = 250
 BATCH_SIZE = 50
 MIN_SAMPLES_PER_REGAL = 30  # überspringe Regale mit zu wenigen Beispielen
+EMBEDDING_CACHE_DIR = "embedding_cache"
+os.makedirs(EMBEDDING_CACHE_DIR, exist_ok=True)
 
 # globaler Abort-Flag für Zieltraining
 GLOBAL_ABORT = False
 
 def mark(txt):
     return f"\033[93m{txt}\033[0m" #gelb markiert
+
+
+# -------------------------
+# Embedding-Cache
+# -------------------------
+def create_embedding_cache(df, indices, embedder, title_c, author_c, beschr_c, regal_c, cache_file):
+    """Erzeuge eine .npy-Datei mit den embeddings aller Beispiele eines Regals."""
+    print(f"[CACHE] Erstelle Embedding-Cache: {cache_file}")
+    texts = []
+    for idx in indices:
+        row = df.loc[idx]
+        title = safe(row.get(title_c))
+        author = safe(row.get(author_c))
+        beschr = safe(row.get(beschr_c))
+        regal_val = extract_regal_group(safe(row.get(regal_c)))
+        txt = f"REGAL: {regal_val} | {title} | {author} | {beschr}"
+        texts.append(txt)
+
+    start_time = time.time()
+    embeddings = embed_texts(embedder, texts)
+    print(f"[CACHE] Embedding-Zeit: {time.time() - start_time:.2f}s")
+    np.save(cache_file, embeddings.astype(np.float32))
+    print(f"[CACHE] Gespeichert unter {cache_file}")
 
 # -------------------------
 # Modell
@@ -62,7 +97,7 @@ def try_load_checkpoint(path, model, optimizer=None):
     if not os.path.exists(path):
         return None
     try:
-        ck = torch.load(path, map_location=DEVICE)
+        ck = torch.load(path, map_location="cpu")  # immer CPU-kompatibel laden
         ck_model = ck.get("model_state_dict") or ck.get("model")
         if ck_model is None:
             return None
@@ -72,7 +107,7 @@ def try_load_checkpoint(path, model, optimizer=None):
                 optimizer.load_state_dict(ck["optimizer_state_dict"])
             except Exception as e_opt:
                 print(f"[WARN] Konnte optimizer_state_dict nicht laden: {e_opt}")
-        print(f"Geladener Checkpoint {path} (weitertrainierbar).")
+        print(f"Geladener Checkpoint {path}.")
         return ck
     except Exception as e:
         print(f"Checkpoint {path} gefunden, aber beschädigt: {e}. Starte neu.")
@@ -90,7 +125,10 @@ def train_single_regal(regal, df, indices, embedder,
                        target_loss=None):
     """
     Trainiert ein einzelnes Regal.
-    Wenn target_loss gesetzt ist, arbeitet die Funktion im Zieltraining-Modus für dieses Regal.
+    - Erzeugt bei Bedarf einen Embedding-Cache und nutzt ihn.
+    - Unterstützt normales Training und Zieltraining.
+    - Speichert Checkpoints beim neuen Bestwert.
+    - Bei KeyboardInterrupt: Verhalten unterscheidet sich je nach Zieltraining oder nicht.
     """
     global GLOBAL_ABORT
     if GLOBAL_ABORT:
@@ -101,13 +139,13 @@ def train_single_regal(regal, df, indices, embedder,
         print(f"Regal {regal}: keine Fach-Labels gefunden, übersprungen.")
         return
 
-    # Input-Dimension ermitteln
-    try:
-        sample_dim = embedder.encode(["test"]).shape[1]
-    except Exception as e:
-        print(f"[FEHLER] Embedder konnte Test-Embedding nicht erstellen: {e}")
-        raise
+    # Embedding-Cache initialisieren / laden
+    cache_file = os.path.join(EMBEDDING_CACHE_DIR, f"embeddings_{regal}.npy")
+    if not os.path.exists(cache_file):
+        create_embedding_cache(df, indices, embedder, title_c, author_c, beschr_c, regal_c, cache_file)
+    embeddings = np.load(cache_file)
 
+    sample_dim = embeddings.shape[1]
     num_classes = len(label_list)
 
     model = build_model(sample_dim, num_classes).to(DEVICE)
@@ -122,7 +160,6 @@ def train_single_regal(regal, df, indices, embedder,
     mode_text = f"Zieltraining (Ziel: {target_loss:.4f})" if target_loss else "Normales Training"
     print(f"\n== START TRAINING Regal {regal} | {len(indices)} Beispiele | {num_classes} Fächer | {mode_text} ==")
 
-    # avg_loss initialisieren, damit es immer existiert
     avg_loss = None
 
     try:
@@ -133,40 +170,31 @@ def train_single_regal(regal, df, indices, embedder,
                 print("Globaler Abbruch-Flag gesetzt, beende Training dieses Regals.")
                 return
 
-            # Sampling für diese Epoche
+            # Sampling für diese Epoche (wir verwenden die Positionen in der Cache-Liste)
             if len(indices) >= EPOCH_SAMPLE_SIZE:
-                sample_idxs = random.sample(indices, EPOCH_SAMPLE_SIZE)
+                sample_idxs = random.sample(range(len(embeddings)), EPOCH_SAMPLE_SIZE)
             else:
-                sample_idxs = random.choices(indices, k=EPOCH_SAMPLE_SIZE)
+                sample_idxs = random.choices(range(len(embeddings)), k=EPOCH_SAMPLE_SIZE)
 
             total_loss = 0.0
             batches = 0
 
             try:
                 for i in range(0, len(sample_idxs), BATCH_SIZE):
-                    batch_idxs = sample_idxs[i:i + BATCH_SIZE]
-                    texts = []
+                    batch_pos = sample_idxs[i:i + BATCH_SIZE]
+
+                    # Eingaben aus Cache
+                    X = torch.tensor(embeddings[batch_pos], dtype=torch.float32, device=DEVICE)
+
+                    # Ziele anhand der ursprünglichen Indizes bestimmen
                     targets = []
-
-                    for idx in batch_idxs:
-                        row = df.loc[idx]
-                        title = safe(row.get(title_c))
-                        author = safe(row.get(author_c))
-                        beschr = safe(row.get(beschr_c))
-                        regal_val = extract_regal_group(safe(row.get(regal_c)))
-                        txt = f"REGAL: {regal_val} | {title} | {author} | {beschr}"
-                        texts.append(txt)
-
-                        fach_label = safe(row.get(fach_c))
+                    for pos in batch_pos:
+                        orig_idx = indices[pos]
+                        fach_label = safe(df.loc[orig_idx].get(fach_c))
                         if fach_label in label_list:
-                            lbl_idx = label_list.index(fach_label)
+                            targets.append(label_list.index(fach_label))
                         else:
-                            lbl_idx = 0
-                        targets.append(lbl_idx)
-
-                    # Embedding kann währenddessen KeyboardInterrupt werfen
-                    X = embed_texts(embedder, texts)
-                    X = torch.tensor(X, dtype=torch.float32, device=DEVICE)
+                            targets.append(0)
                     y = torch.tensor(targets, dtype=torch.long, device=DEVICE)
 
                     model.train()
