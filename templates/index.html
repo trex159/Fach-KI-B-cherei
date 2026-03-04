@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="de">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fach- & Regal-Klassifikation</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px 20px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .content {
+            padding: 40px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 40px;
+        }
+
+        @media (max-width: 900px) {
+            .content {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .form-section h2 {
+            margin-bottom: 20px;
+            color: #333;
+            font-size: 1.5em;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 500;
+        }
+
+        input[type="text"],
+        textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-family: inherit;
+            font-size: 1em;
+            transition: all 0.3s ease;
+        }
+
+        input[type="text"]:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 120px;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 30px;
+        }
+
+        button {
+            flex: 1;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn-predict {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-predict:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-predict:active {
+            transform: translateY(0);
+        }
+
+        .btn-predict:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .btn-clear {
+            background: #f0f0f0;
+            color: #333;
+        }
+
+        .btn-clear:hover {
+            background: #e0e0e0;
+        }
+
+        .results-section {
+            background: #f9f9f9;
+            padding: 30px;
+            border-radius: 8px;
+        }
+
+        .results-section h2 {
+            margin-bottom: 20px;
+            color: #333;
+            font-size: 1.5em;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 40px;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            border: 4px solid #f0f0f0;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        .logs {
+            background: #f0f0f0;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 0.9em;
+            color: #666;
+            font-family: "Courier New", monospace;
+        }
+
+        .log-entry {
+            padding: 5px 0;
+            border-bottom: 1px solid #ddd;
+        }
+
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .results-table thead {
+            background: #667eea;
+            color: white;
+        }
+
+        .results-table th {
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+        }
+
+        .results-table td {
+            padding: 12px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .results-table tr:hover {
+            background: #f5f5f5;
+        }
+
+        .results-table tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+
+        .badge-regal {
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+
+        .badge-fach {
+            background: #f3e5f5;
+            color: #7b1fa2;
+        }
+
+        .empty {
+            text-align: center;
+            padding: 40px 20px;
+            color: #999;
+        }
+
+        .error {
+            background: #ffebee;
+            color: #c62828;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            display: none;
+        }
+
+        .error.active {
+            display: block;
+        }
+
+        .success {
+            background: #e8f5e9;
+            color: #2e7d32;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            display: none;
+        }
+
+        .success.active {
+            display: block;
+        }
+
+        .metric {
+            display: inline-block;
+            margin-right: 10px;
+            background: #f0f0f0;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.85em;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Fach- & Regal-Klassifikation</h1>
+            <p>Geben Sie Buchtitel, Autor und Beschreibung ein für intelligente Vorhersagen</p>
+        </div>
+
+        <div class="content">
+            <!-- Eingabe Form -->
+            <div class="form-section">
+                <h2>Eingabe</h2>
+                <form id="predictionForm">
+                    <div class="form-group">
+                        <label for="title">Titel</label>
+                        <input type="text" id="title" name="title" placeholder="z.B. Der Herr der Ringe">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="author">Autor</label>
+                        <input type="text" id="author" name="author" placeholder="z.B. J.R.R. Tolkien">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="beschreibung">Kurzbeschreibung</label>
+                        <textarea id="beschreibung" name="beschreibung"
+                            placeholder="z.B. Eine epische Fantasy mit Zaubern und Abenteuer..."></textarea>
+                    </div>
+
+                    <div class="button-group">
+                        <button type="submit" class="btn-predict" id="predictBtn">Vorhersage starten</button>
+                        <button type="reset" class="btn-clear">Zurücksetzen</button>
+                    </div>
+                </form>
+
+                <div id="errorMsg" class="error"></div>
+                <div id="successMsg" class="success"></div>
+            </div>
+
+            <!-- Ergebnisse -->
+            <div class="results-section">
+                <h2>Ergebnisse</h2>
+
+                <div id="loading" class="loading">
+                    <div class="spinner"></div>
+                    <p>Analysiere Eingabe...</p>
+                </div>
+
+                <div id="empty" class="empty">
+                    <p>Ergebnisse erscheinen hier</p>
+                </div>
+
+                <div id="resultsContent" style="display: none;">
+                    <div id="logs" class="logs"></div>
+                    <table class="results-table">
+                        <thead>
+                            <tr>
+                                <th>Regal</th>
+                                <th>Fach</th>
+                                <th>P(Regal)</th>
+                                <th>P(Fach|Regal)</th>
+                                <th>Kombiniert</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tableBody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById('predictionForm');
+        const loading = document.getElementById('loading');
+        const empty = document.getElementById('empty');
+        const resultsContent = document.getElementById('resultsContent');
+        const errorMsg = document.getElementById('errorMsg');
+        const successMsg = document.getElementById('successMsg');
+        const predictBtn = document.getElementById('predictBtn');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            await predict();
+        });
+
+        async function predict() {
+            const title = document.getElementById('title').value.trim();
+            const author = document.getElementById('author').value.trim();
+            const beschreibung = document.getElementById('beschreibung').value.trim();
+
+            // Validierung
+            if (!title && !author && !beschreibung) {
+                showError('Bitte füllen Sie mindestens ein Feld aus.');
+                return;
+            }
+
+            // UI-State: Loading
+            loading.classList.add('active');
+            empty.style.display = 'none';
+            resultsContent.style.display = 'none';
+            errorMsg.classList.remove('active');
+            successMsg.classList.remove('active');
+            predictBtn.disabled = true;
+
+            try {
+                const response = await fetch('/api/predict', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        title,
+                        author,
+                        beschreibung
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!data.success) {
+                    showError(data.error || 'Un bekannter Fehler');
+                    loading.classList.remove('active');
+                    empty.style.display = 'block';
+                    return;
+                }
+
+                // Logs anzeigen
+                const logsDiv = document.getElementById('logs');
+                if (data.logs && data.logs.length > 0) {
+                    logsDiv.innerHTML = data.logs
+                        .map(log => `<div class="log-entry">ℹ️ ${escapeHtml(log)}</div>`)
+                        .join('');
+                } else {
+                    logsDiv.innerHTML = '<div class="log-entry">✓ Analyse abgeschlossen</div>';
+                }
+
+                // Tabelle füllen
+                const tableBody = document.getElementById('tableBody');
+                tableBody.innerHTML = '';
+
+                if (data.results && data.results.length > 0) {
+                    data.results.forEach(result => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td><span class="badge badge-regal">${escapeHtml(result.regal)}</span></td>
+                            <td><span class="badge badge-fach">${escapeHtml(result.fach)}</span></td>
+                            <td><span class="metric">${(result.p_reg * 100).toFixed(1)}%</span></td>
+                            <td><span class="metric">${(result.p_fach * 100).toFixed(1)}%</span></td>
+                            <td><strong>${(result.combined * 100).toFixed(2)}%</strong></td>
+                        `;
+                        tableBody.appendChild(row);
+                    });
+
+                    showSuccess(`✓ ${data.results.length} Ergebnisse gefunden`);
+                    resultsContent.style.display = 'block';
+                } else {
+                    empty.innerHTML = '<p>Keine Ergebnisse gefunden</p>';
+                    empty.style.display = 'block';
+                }
+
+            } catch (error) {
+                showError(`Netzwerkfehler: ${error.message}`);
+                empty.style.display = 'block';
+            } finally {
+                loading.classList.remove('active');
+                predictBtn.disabled = false;
+            }
+        }
+
+        function showError(msg) {
+            errorMsg.textContent = '❌ ' + msg;
+            errorMsg.classList.add('active');
+            successMsg.classList.remove('active');
+        }
+
+        function showSuccess(msg) {
+            successMsg.textContent = msg;
+            successMsg.classList.add('active');
+            errorMsg.classList.remove('active');
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+
+</html>
