@@ -46,6 +46,7 @@ MIN_SAMPLES_PER_REGAL = 30  # überspringe Regale mit zu wenigen Beispielen
 EMBEDDING_CACHE_DIR = "embedding_cache"
 os.makedirs(EMBEDDING_CACHE_DIR, exist_ok=True)
 
+
 # globaler Abort-Flag für Zieltraining
 GLOBAL_ABORT = False
 MAX_CPU_PERCENT = None  # wird zur Laufzeit gesetzt
@@ -96,18 +97,23 @@ def try_load_checkpoint(path, model, optimizer=None):
     if not os.path.exists(path):
         return None
     try:
-        ck = torch.load(path, map_location="cpu")  # immer CPU-kompatibel laden
+        ck = torch.load(path, map_location="cpu")
+
         ck_model = ck.get("model_state_dict") or ck.get("model")
         if ck_model is None:
             return None
+
         model.load_state_dict(ck_model)
+
         if optimizer is not None and "optimizer_state_dict" in ck:
             try:
                 optimizer.load_state_dict(ck["optimizer_state_dict"])
             except Exception as e_opt:
                 print(f"[WARN] Konnte optimizer_state_dict nicht laden: {e_opt}")
+
         print(f"Geladener Checkpoint {path}.")
         return ck
+
     except Exception as e:
         print(f"Checkpoint {path} gefunden, aber beschädigt: {e}. Starte neu.")
         return None
@@ -155,6 +161,11 @@ def train_single_regal(regal, df, indices, embedder,
     ck = try_load_checkpoint(ck_path, model, optimizer)
     best_loss = ck.get("best_loss", float("inf")) if ck else float("inf")
 
+    # Zieltraining-Optimierung: Regal überspringen falls Ziel bereits erreicht
+    if target_loss is not None and best_loss <= target_loss:
+        print(f"Regal {regal} bereits bei {best_loss:.6f} <= {target_loss:.6f}, übersprungen.")
+        return
+
     epoch = 0
     mode_text = f"Zieltraining (Ziel: {target_loss:.4f})" if target_loss else "Normales Training"
     print(f"\n== START TRAINING Regal {regal} | {len(indices)} Beispiele | {num_classes} Fächer | {mode_text} ==")
@@ -189,21 +200,37 @@ def train_single_regal(regal, df, indices, embedder,
                 print(f"Epochenlimit {epoch_limit} erreicht, Regal {regal} übersprungen.")
                 return
 
-            # Adaptive Batch-Größen
-            epoch_sample_size = adaptive_batch_size(BASE_EPOCH_SAMPLE_SIZE, MAX_CPU_PERCENT)
-            batch_size = adaptive_batch_size(BASE_BATCH_SIZE, MAX_CPU_PERCENT)
+            # Cache laden und validieren
+            if not os.path.exists(cache_file):
+                create_embedding_cache(df, indices, embedder, title_c, author_c, beschr_c, regal_c, cache_file)
 
-            # Sampling für diese Epoche (wir verwenden die Positionen in der Cache-Liste)
-            if len(indices) >= epoch_sample_size:
-                sample_idxs = random.sample(range(len(embeddings)), epoch_sample_size)
-            else:
-                sample_idxs = random.choices(range(len(embeddings)), k=epoch_sample_size)
+            embeddings = np.load(cache_file)
+
+            if len(embeddings) != len(indices):
+                print(f"[CACHE] Inkonsistenz bei Regal {regal}, Cache wird neu erstellt.")
+                os.remove(cache_file)
+                create_embedding_cache(df, indices, embedder, title_c, author_c, beschr_c, regal_c, cache_file)
+                embeddings = np.load(cache_file)
+
+            # Adaptive Batch-Größen
+            epoch_sample_size = min(
+                adaptive_batch_size(BASE_EPOCH_SAMPLE_SIZE, MAX_CPU_PERCENT),
+                len(embeddings)
+            )
+
+            batch_size = min(
+                adaptive_batch_size(BASE_BATCH_SIZE, MAX_CPU_PERCENT),
+                epoch_sample_size
+            )
+
+            # Sampling für diese Epoche (kein random.choices, nur sample)
+            sample_idxs = random.sample(range(len(embeddings)), epoch_sample_size)
 
             total_loss = 0.0
             batches = 0
 
             try:
-                for i in range(0, len(sample_idxs), batch_size):
+                for i in range(0, epoch_sample_size, batch_size):
                     batch_pos = sample_idxs[i:i + batch_size]
 
                     # Eingaben aus Cache
@@ -214,10 +241,12 @@ def train_single_regal(regal, df, indices, embedder,
                     for pos in batch_pos:
                         orig_idx = indices[pos]
                         fach_label = safe(df.loc[orig_idx].get(fach_c))
-                        if fach_label in label_list:
+
+                        try:
                             targets.append(label_list.index(fach_label))
-                        else:
+                        except ValueError:
                             targets.append(0)
+
                     y = torch.tensor(targets, dtype=torch.long, device=DEVICE)
 
                     model.train()
