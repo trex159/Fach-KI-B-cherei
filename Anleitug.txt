@@ -1,6 +1,6 @@
 ╔════════════════════════════════════════════════════════════════════════════╗
-║               POSITIONS-AI: BIBLIOTHEKS-KLASSIFIZIERUNG                     ║
-║                        DOKUMENTATION & ANLEITUNG                            ║
+║               POSITIONS-AI: BIBLIOTHEKS-KLASSIFIZIERUNG                    ║
+║                        DOKUMENTATION & ANLEITUNG                           ║
 ╚════════════════════════════════════════════════════════════════════════════╝
 
 
@@ -9,10 +9,13 @@
 
 1.1 Python Dependencies installieren:
     ─────────────────────────────────────
-    pip install pandas sentence-transformers python-Levenshtein
-    
-    Zusätzlich wird psutil für CPU-Limitierung benötigt:
-    pip install psutil
+    pip install pandas sentence-transformers python-Levenshtein psutil
+
+    optional directml:
+    pip install torch-directml
+
+    Für die GUI:
+    pip install flask
 
 1.2 GPU-Unterstützung (optional, aber empfohlen):
     ─────────────────────────────────────────────
@@ -80,7 +83,7 @@ Die KI arbeitet in zwei Stufen:
         - regal            (Regal-Code)
     
     Beispiel-Zeile:
-        "Erebos","Ursula Poznanski","Science-Fiction Roman","Jugendliteratur","A1"
+        "Erebos","Ursula Poznanski","Science-Fiction Roman","Jugendliteratur",A, 1
     
     ➜ Weitere Spalten stören nicht und werden ignoriert
     ➜ Spalten-Namen sind case-insensitive
@@ -144,6 +147,16 @@ Die KI arbeitet in zwei Stufen:
         Regal: C | Fach: - | P(regal)=0.01 | P(fach|regal)=1.00 | Komb=0.01
     
     ➜ Top-10 Vorschläge werden nach kombinierter Wahrscheinlichkeit sortiert
+
+5.2 GUI-Modus (app.py)
+    ════════════════════════════
+    
+    python fach_KI_gui.py
+    
+    ➜ Web-basierte Schnittstelle (NiceGUI)
+    ➜ Öffnet automatisch im Browser
+    ➜ Einfacheres Testen für End-User
+
 
 █ 6. HARDWARE & OPTIMIERUNGEN
 ═════════════════════════════════════════════════════════════════════════════
@@ -280,6 +293,5 @@ Lösung:
 Diese KI arbeitet lokal und speichert keine Daten online.
 Alle Modelle und Daten bleiben auf Ihrem Computer.
 
-Version: 2.1 (26 Feb 2026)
-
+Version: 2.2 (3 März 2026)
 Features: GPU-Auswahl, CPU-Limitierung, Embedding-Cache, DirectML Support	
